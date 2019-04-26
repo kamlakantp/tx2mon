@@ -22,6 +22,9 @@
 #define UPDATE_CORE_MASK	0xB0C0
 #define UPDATE_CORE_FEATURE	0xB0C1
 
+DECLARE_BITMAP(core_id_mask, 512);
+raw_spinlock_t cm_lock;
+
 struct tx2_node_data {
 	struct bin_attribute	bin_attr;
 	void			*mc_region;
@@ -75,21 +78,24 @@ static int smcc_update_core_feature_per_cpu(void)
 
 static void update_core_feature_per_cpu(void *data)
 {
-	int err;
+	int core, cpu;
 
-	if (read_cpuid_mpidr() & 0xff)
-		return;
-	err = smcc_update_core_feature_per_cpu();
-	if (err) {
-		pr_info("SMC Call failed on CPU %d\n", get_cpu());
-		return;
+	cpu = get_cpu();
+	core = topology_core_id(cpu);
+
+	raw_spin_lock(&cm_lock);
+	if (!test_bit(core, core_id_mask)) {
+		set_bit(core, core_id_mask);
+		smcc_update_core_feature_per_cpu();
 	}
+	raw_spin_unlock(&cm_lock);
 }
 
 static void update_core_feature(void)
 {
 	int cpu;
 
+	bitmap_clear(core_id_mask, 0, 512);
 	for_each_online_cpu(cpu) {
 		smp_call_function_single(cpu,
 				update_core_feature_per_cpu,
@@ -228,6 +234,8 @@ static int __init socmon_init(void)
 				&dev_attr_core_mask.attr);
 		if (err)
 			pr_info("Error creating 'core_mask' sysfs entry\n");
+		else
+			raw_spin_lock_init(&cm_lock);
 	} else
 		pr_info("Core mask: No Firmware support\n");
 
